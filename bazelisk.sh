@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright lowRISC contributors (OpenTitan project).
 # Licensed under the Apache License, Version 2.0, see LICENSE for details.
 # SPDX-License-Identifier: Apache-2.0
@@ -7,7 +7,7 @@
 # Bazelisk is a wrapper for `bazel` that can download and execute the project's
 # required bazel version.
 
-set -eo pipefail
+set -euo pipefail
 
 # Change to this script's directory, as it is the location of the bazel workspace.
 cd "$(dirname "$0")"
@@ -66,48 +66,6 @@ function up_to_date() {
     return 0
 }
 
-function outquery_starlark_expr() {
-    local query="$1"
-    shift
-    if [[ ${query} == "outquery" ]]; then
-        q="-one"
-    else
-        q=${query#outquery}
-    fi
-
-    case "$q" in
-        -one)
-            echo "target.files.to_list()[0].path"
-            ;;
-        -all)
-            echo "\"\\n\".join([f.path for f in depset(transitive=[target.files, target.default_runfiles.files]).to_list()])"
-            ;;
-        -providers)
-            echo "providers(target)"
-            ;;
-        -*)
-            echo "\"\\n\".join([f.path for f in depset(transitive=[target.files, target.default_runfiles.files]).to_list() if \"$q\"[1:] in f.path])"
-            ;;
-        .*)
-            echo "\"\\n\".join([f.path for f in depset(transitive=[target.files, target.default_runfiles.files]).to_list() if f.path.endswith(\"$q\")])"
-            ;;
-    esac
-}
-
-# Arguments:
-# $qexpr: starlark expression - see `outquery_starlark_expr`
-# $name: name of an array containing Bazel arguments that should come _before_
-#        the subcommand (e.g. `--bazelrc=...`).
-function do_outquery() {
-    local qexpr="$1"
-    shift
-
-    "$file" "${pre_cmd_args[@]}" cquery "$@" \
-        --output=starlark --starlark:expr="$qexpr" \
-        --ui_event_filters=-info --noshow_progress \
-        | sort | uniq
-}
-
 function main() {
     local bindir="${REPO_TOP}/${BINDIR}"
     local file="${BAZEL_BIN:-${bindir}/bazelisk}"
@@ -136,71 +94,7 @@ function main() {
         fi
     fi
 
-    # Shift all flags (starting with `-`) that come before the subcommand
-    # into an array.
-    pre_cmd_args=()
-    while [[ "${1-}" == -* ]]; do
-        pre_cmd_args+=("$1")
-        shift
-    done
-
-    case "${1-}" in
-        outquery*)
-            # The custom 'outquery' command can be used to query bazel for the
-            # outputs associated with labels.
-            # The outquery command can take several forms:
-            #   outquery: return one output file associated with the label.
-            #   outquery-all: return all output files associated with the label.
-            #   outquery-x: return output files containing the substring "x".
-            #   outquery.x: return output files ending with the substring ".x".
-            local qexpr
-            qexpr="$(outquery_starlark_expr "$1")"
-            shift
-            do_outquery "$qexpr" "$@"
-            ;;
-        build-then)
-            # The 'build-then' command builds the requested targets and then
-            # evaluates the given command template, replacing "%s" with the path
-            # to an output file.
-            #
-            # For example, the command below would build "//:foo" and run "less"
-            # on one of the output files.
-            #
-            #     ./bazelisk.sh build-then "less %s" //:foo
-            shift
-            local command_template="$1"
-            shift
-            local qexpr outfile
-            qexpr="$(outquery_starlark_expr outquery)"
-            outfile=$(do_outquery "$qexpr" "$@")
-            "$file" "${pre_cmd_args[@]}" build "$@"
-            # shellcheck disable=SC2059
-            # We are intentionally using $command_template as a format string.
-            eval "$(printf "$command_template" "$outfile")"
-            ;;
-        sync)
-            # The `sync` command has been disabled when using Bzlmod in favour of
-            # `fetch`. For some reason Bazel crashes when you try to use `sync`
-            # rather than printing a helpful error message.
-            #
-            # When run interactively, print a deprecation error and exit.
-            # When run in a script, intercept `sync` commands and forward them
-            # to `fetch` which is more or less identical. This ensures Git hooks
-            # will continue working on this branch and older branches which do
-            # not support `bazel fetch --configure` yet.
-            if [ -t 0 ]; then
-                echo 'ERROR: The `bazel sync` command has been deprecated.' >&2
-                echo '       Use `bazel fetch` instead.'                    >&2
-                exit 1
-            else
-                shift
-                exec "$file" "${pre_cmd_args[@]}" fetch "$@"
-            fi
-            ;;
-        *)
-            exec "$file" "${pre_cmd_args[@]}" "$@"
-            ;;
-    esac
+    exec "$file" "$@"
 }
 
 main "$@"
